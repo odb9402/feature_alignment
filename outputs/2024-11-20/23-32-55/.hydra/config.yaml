@@ -1,0 +1,15 @@
+dataset:
+  _target_: src.dataset.dataset.ImageNetDataset
+  root: ./data
+  batch_size: 64
+  params:
+    img_size: 256
+model:
+  _target_: src.model.sit.SiT_B_8
+trainer:
+  _target_: src.trainer.flow_matching_trainer.FlowMatchingTrainer
+  num_epochs: 100
+  params:
+    lr: 0.0001
+    device: cuda
+    img_encoder: SD3
