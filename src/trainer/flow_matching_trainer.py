@@ -17,7 +17,15 @@ class FlowMatchingTrainer(BaseTrainer):
     MIN_STD: float = 0.0  # minimum size of std for the flow matching
     CLAMP_CONTINUOUS_TIME: float = 0.0
     
-    def __init__(self, model: BaseModel, dataloader, num_epochs=10, device='cpu', lr=1e-4, img_encoder="sd3"):
+    def __init__(self, 
+                 model: BaseModel, 
+                 dataloader, 
+                 num_epochs=10, 
+                 device='cpu', 
+                 lr=1e-4, 
+                 img_encoder="sd3", 
+                 n_timesteps=1000):
+        self.n_timesteps = n_timesteps
         self.model = model.to(device)
         self.dataloader = dataloader
         self.num_epochs = num_epochs
@@ -45,7 +53,7 @@ class FlowMatchingTrainer(BaseTrainer):
                 self.optimizer.zero_grad()
 
                 latents = self.maybe_encode_image(image)
-                cond_input = self.maybe_get_conditional_input()
+                cond_input = self.maybe_get_conditional_input(label)
                 noise, noise_latents, t = self.get_noisy_input(latents)
 
                 timesteps = self.discritize_timestep(t, self.n_timesteps)
@@ -72,14 +80,24 @@ class FlowMatchingTrainer(BaseTrainer):
         return loss_history
 
     def maybe_encode_image(self, data):
+        """
+        If self.vae is defined, this function encodes the given data using the
+        pre-trained VAE. Otherwise, it simply returns the input data.
+
+        Args:
+            data: The input data to be encoded.
+
+        Returns:
+            The encoded input data.
+        """
         if self.vae:
             with torch.no_grad():
-                return self.vae.encode(data).latent_dist.sample() * self.vae.config.scaling_factor
+                return (self.vae.encode(data).latent_dist.sample() - self.vae.config.shift_factor) * self.vae.config.scaling_factor
         else:
             return data
 
-    def maybe_get_conditional_input(self):
-        return None
+    def maybe_get_conditional_input(self, label):
+        return label 
 
     def get_noisy_input(
         self,
@@ -116,6 +134,20 @@ class FlowMatchingTrainer(BaseTrainer):
         use_weighting: bool = False,
         reduce: str = "mean",
     ) -> torch.Tensor:
+        """
+        Computes the rectified flow loss (RFL) for the given predictions and inputs.
+
+        Args:
+            input: The input tensor, shape (B, C, H, W)
+            noise: The noise tensor, shape (B, C, H, W)
+            t: The timestep tensor, shape (B,) or (B, 1)
+            preds: The predicted tensor, shape (B, C, H, W)
+            use_weighting: Whether to use the logit-normalized timestep as a weight
+            reduce: How to reduce the loss, either "mean" or "none". If "none", the loss is returned as a tensor of shape (B, C, H, W)
+
+        Returns:
+            The rectified flow loss, a scalar if reduce is "mean", otherwise a tensor of shape (B, C, H, W)
+        """
         t = t.reshape(t.shape[0], *[1 for _ in range(len(input.shape) - len(t.shape))])
 
         target_flow = (1 - self.MIN_STD) * noise - input
@@ -134,4 +166,4 @@ class FlowMatchingTrainer(BaseTrainer):
         return loss
 
     def discritize_timestep(self, t: Union[torch.Tensor, float], n_timesteps: int = 1000) -> torch.Tensor:
-        return (t * n_timesteps).round().long()
+        return (t * n_timesteps).round()#.long()

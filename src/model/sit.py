@@ -163,7 +163,6 @@ class SiT(nn.Module):
     """
     def __init__(
         self,
-        path_type='edm',
         input_size=32,
         patch_size=2,
         in_channels=4,
@@ -181,7 +180,6 @@ class SiT(nn.Module):
         **block_kwargs # fused_attn
     ):
         super().__init__()
-        self.path_type = path_type
         self.in_channels = in_channels
         self.out_channels = in_channels
         self.patch_size = patch_size

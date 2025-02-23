@@ -14,7 +14,7 @@ class ExperimentFactory(ABC):
         pass
 
     @abstractmethod
-    def create_dataset(self) -> BaseDataset:
+    def create_dataloader(self) -> BaseDataset:
         pass
 
     @abstractmethod
@@ -28,7 +28,7 @@ class GenericExperimentFactory(ExperimentFactory):
         model_params = cfg.model.get('params', {})
         return model_class(**model_params)
     
-    def create_dataset(self, cfg) -> BaseDataset:
+    def create_dataloader(self, cfg) -> BaseDataset:
         dataset_class = get_class(cfg.dataset._target_)
         dataset_params = cfg.dataset.get('params', {})
         dataset_root = cfg.dataset.get('root', './data')
