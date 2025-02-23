@@ -1,0 +1,26 @@
+seed: 0
+
+dataset:
+  _target_: src.dataset.dataset.CIFAR100Dataset
+  root: './data'
+  batch_size: 128
+  params:
+    img_size: 64 
+
+model:
+  _target_: src.model.sit.SiT_B_2
+  params:
+    qk_norm: true
+    input_size: 64
+    in_channels: 3
+    num_classes: 100
+    class_dropout_prob: 0.1
+    use_cfg: true
+
+trainer:
+  _target_: src.trainer.flow_matching_repa_trainer.FlowMatchingREPATrainer
+  num_epochs: 100
+  device: 'cuda:0'
+  params:
+    lr: 1e-4
+    img_encoder: null 
