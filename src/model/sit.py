@@ -175,6 +175,7 @@ class SiT(nn.Module):
         class_dropout_prob=0.1,
         num_classes=1000,
         use_cfg=False,
+        use_projector=False,
         z_dims=[768],
         projector_dim=2048,
         **block_kwargs # fused_attn
@@ -188,6 +189,7 @@ class SiT(nn.Module):
         self.num_classes = num_classes
         self.z_dims = z_dims
         self.encoder_depth = encoder_depth
+        self.use_projector = use_projector
 
         self.x_embedder = PatchEmbed(
             input_size, patch_size, in_channels, hidden_size, bias=True
@@ -201,9 +203,10 @@ class SiT(nn.Module):
         self.blocks = nn.ModuleList([
             SiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, **block_kwargs) for _ in range(depth)
         ])
-        self.projectors = nn.ModuleList([
-            build_mlp(hidden_size, projector_dim, z_dim) for z_dim in z_dims
-            ])
+        if use_projector:
+            self.projectors = nn.ModuleList([
+                build_mlp(hidden_size, projector_dim, z_dim) for z_dim in z_dims
+                ])
         self.final_layer = FinalLayer(decoder_hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
 
@@ -260,7 +263,7 @@ class SiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
     
-    def forward(self, x, t, y, return_logvar=False):
+    def forward(self, x, t, y):
         """
         Forward pass of SiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -277,12 +280,15 @@ class SiT(nn.Module):
 
         for i, block in enumerate(self.blocks):
             x = block(x, c)                      # (N, T, D)
-            if (i + 1) == self.encoder_depth:
+            if (i + 1) == self.encoder_depth and self.use_projector:
                 zs = [projector(x.reshape(-1, D)).reshape(N, T, -1) for projector in self.projectors]
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
-        return x, zs
+        if self.use_projector:
+            return x, zs
+        else:
+            return x
 
 
 #################################################################################
