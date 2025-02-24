@@ -25,6 +25,9 @@ def run_experiment(cfg: DictConfig):
     dataloader = factory.create_dataloader(cfg)
     trainer = factory.create_trainer(model, dataloader, cfg)
 
+    if cfg.trainer.load_checkpoint_path is not None:
+        trainer.load_checkpoint(cfg.trainer.load_checkpoint_path)
+
     # Start training and log progress
     logger.info("Training started...")
     loss_history = trainer.train()

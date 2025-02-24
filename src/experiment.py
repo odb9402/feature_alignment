@@ -43,5 +43,7 @@ class GenericExperimentFactory(ExperimentFactory):
             dataloader=dataloader,
             device=cfg.trainer.device,
             num_epochs=cfg.trainer.num_epochs,
+            save_checkpoint_dir=cfg.trainer.save_checkpoint_dir,
+            save_checkpoint_interval=cfg.trainer.save_checkpoint_interval,
             **trainer_params
         )

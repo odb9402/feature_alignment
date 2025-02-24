@@ -2,8 +2,8 @@ seed: 0
 
 dataset:
   _target_: src.dataset.dataset.CIFAR100Dataset
-  root: './data'
-  batch_size: 128
+  root: '~/feature_alignment/data'
+  batch_size: 64 
   params:
     img_size: 64 
 
@@ -21,6 +21,9 @@ trainer:
   _target_: src.trainer.flow_matching_trainer.FlowMatchingTrainer
   num_epochs: 100
   device: 'cuda:0'
+  load_checkpoint_path: null
+  save_checkpoint_dir: ~/feature_alignment/ckpts/sits2_cifar64
+  save_checkpoint_interval: 10000
   params:
     lr: 1e-4
     img_encoder: null 
