@@ -8,19 +8,12 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
+from src.model.projector_mlp import build_mlp, build_mlp_1024_to_256
 
-
-def build_mlp(hidden_size, projector_dim, z_dim):
-    return nn.Sequential(
-                nn.Linear(hidden_size, projector_dim),
-                nn.SiLU(),
-                nn.Linear(projector_dim, projector_dim),
-                nn.SiLU(),
-                nn.Linear(projector_dim, z_dim),
-            )
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -204,9 +197,19 @@ class SiT(nn.Module):
             SiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, **block_kwargs) for _ in range(depth)
         ])
         if use_projector:
-            self.projectors = nn.ModuleList([
-                build_mlp(hidden_size, projector_dim, z_dim) for z_dim in z_dims
+            # seqlen 1024
+            if input_size // self.patch_size == 32:
+                self.projectors = nn.ModuleList([
+                    build_mlp_1024_to_256(hidden_size, projector_dim, z_dim) for z_dim in z_dims
                 ])
+
+            # seqlen 256
+            elif input_size // self.patch_size == 16:
+                self.projectors = nn.ModuleList([
+                    build_mlp(hidden_size, projector_dim, z_dim) for z_dim in z_dims
+                    ])
+            else:
+                raise NotImplementedError("input size not supported")
         self.final_layer = FinalLayer(decoder_hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
 
@@ -281,7 +284,8 @@ class SiT(nn.Module):
         for i, block in enumerate(self.blocks):
             x = block(x, c)                      # (N, T, D)
             if (i + 1) == self.encoder_depth and self.use_projector:
-                zs = [projector(x.reshape(-1, D)).reshape(N, T, -1) for projector in self.projectors]
+                zs = [projector(x).reshape(N, 256, -1) for projector in self.projectors]
+                assert zs[0].shape[-1] == self.z_dims[0]
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
