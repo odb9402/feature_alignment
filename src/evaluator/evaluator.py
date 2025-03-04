@@ -102,16 +102,28 @@ class ModelEvaluator:
         self.model.eval()
         logger.info(f"Loaded checkpoint from {checkpoint_path}")
 
-    def calculate_validation_loss(self, n_batches: Optional[int] = None) -> float:
+    def calculate_validation_loss(self, n_batches: Optional[int] = None, metric_file: Optional[str] = None) -> float:
         """
         Calculate validation loss on validation dataset.
         
         Args:
             n_batches: Number of batches to use for validation (None for all)
+            metric_file: Path to existing metric file to check for cached validation loss
             
         Returns:
             Average validation loss
         """
+        # Check if validation loss already exists in metrics file
+        if metric_file is not None and os.path.exists(metric_file):
+            try:
+                with open(metric_file, 'r') as f:
+                    metrics = json.load(f)
+                if 'validation_loss' in metrics and not np.isnan(metrics['validation_loss']):
+                    logger.info(f"Found existing validation loss: {metrics['validation_loss']:.6f}")
+                    return metrics['validation_loss']
+            except Exception as e:
+                logger.warning(f"Failed to load existing validation loss: {str(e)}")
+        
         if self.val_dataloader is None:
             logger.warning("No validation dataloader provided, skipping validation loss")
             return float('nan')
@@ -157,6 +169,7 @@ class ModelEvaluator:
         nfe: int = 50, 
         target_dir: Optional[str] = None,
         class_labels: Optional[torch.Tensor] = None,
+        skip_if_exists: bool = True
     ) -> List[torch.Tensor]:
         """
         Generate images using the model.
@@ -167,6 +180,7 @@ class ModelEvaluator:
             nfe: Number of function evaluations (sampling steps)
             target_dir: Directory to save generated images
             class_labels: Optional tensor of class labels for conditional generation
+            skip_if_exists: Skip generation if target directory already contains the expected number of images
             
         Returns:
             List of generated image tensors
@@ -175,8 +189,18 @@ class ModelEvaluator:
         
         if target_dir is None:
             target_dir = self.output_dir / "generated_images"
-        os.makedirs(target_dir, exist_ok=True)
         
+        target_path = Path(target_dir)
+        target_path.mkdir(exist_ok=True, parents=True)
+        
+        # Check if images already exist
+        if skip_if_exists:
+            existing_images = list(target_path.glob("sample_*.png"))
+            if len(existing_images) >= num_images:
+                logger.info(f"Found {len(existing_images)} existing images in {target_dir}, skipping generation")
+                # Return empty list as we don't load the images
+                return []
+            
         # Prepare for sampling
         self.model.eval()
         generated_images = []
@@ -235,13 +259,13 @@ class ModelEvaluator:
                 generated_images.append(images.cpu())
         
         # Save grid of images
-        if self.save_images:
+        if self.save_images and generated_images:
             all_images = torch.cat(generated_images, dim=0)
             grid_size = min(8, int(np.sqrt(len(all_images))))
             grid = make_grid(all_images[:grid_size**2], nrow=grid_size)
             save_image(grid, f"{target_dir}/grid.png")
             
-        logger.info(f"Generated {len(torch.cat(generated_images, dim=0))} images at {target_dir}")
+        logger.info(f"Generated {len(torch.cat(generated_images, dim=0)) if generated_images else 0} images at {target_dir}")
         return generated_images
 
     def calculate_fid(
@@ -249,7 +273,8 @@ class ModelEvaluator:
         real_images_dir: str,
         generated_images_dir: Optional[str] = None,
         num_images: int = 500,
-        batch_size: int = 50
+        batch_size: int = 50,
+        metric_file: Optional[str] = None
     ) -> float:
         """
         Calculate Fréchet Inception Distance (FID) between real and generated images.
@@ -259,10 +284,22 @@ class ModelEvaluator:
             generated_images_dir: Directory for generated images (will generate if None)
             num_images: Number of images to generate/use
             batch_size: Batch size for generation
+            metric_file: Path to existing metric file to check for cached FID score
             
         Returns:
             FID score
         """
+        # Check if FID score already exists in metrics file
+        if metric_file is not None and os.path.exists(metric_file):
+            try:
+                with open(metric_file, 'r') as f:
+                    metrics = json.load(f)
+                if 'fid_score' in metrics and not np.isnan(metrics['fid_score']):
+                    logger.info(f"Found existing FID score: {metrics['fid_score']:.4f}")
+                    return metrics['fid_score']
+            except Exception as e:
+                logger.warning(f"Failed to load existing FID score: {str(e)}")
+        
         # First ensure real images directory is properly prepared
         try:
             real_dir = self.prepare_real_images_dir(real_images_dir, num_images, batch_size)
@@ -278,10 +315,28 @@ class ModelEvaluator:
                 self.generate_images(
                     num_images=num_images, 
                     batch_size=batch_size,
-                    target_dir=generated_images_dir
+                    target_dir=generated_images_dir,
+                    skip_if_exists=True
                 )
             except Exception as e:
                 logger.error(f"Failed to generate images for FID calculation: {str(e)}")
+                return float('nan')
+        
+        # Check if there are enough images in the generated directory
+        gen_dir = Path(generated_images_dir)
+        gen_images = list(gen_dir.glob("*.png"))
+        
+        if len(gen_images) < num_images * 0.9:  # Allow for some flexibility (90% of expected images)
+            logger.warning(f"Not enough generated images found in {generated_images_dir}. Generating more...")
+            try:
+                self.generate_images(
+                    num_images=num_images, 
+                    batch_size=batch_size,
+                    target_dir=generated_images_dir,
+                    skip_if_exists=False
+                )
+            except Exception as e:
+                logger.error(f"Failed to generate additional images: {str(e)}")
                 return float('nan')
         
         # Calculate FID using clean-fid
@@ -300,7 +355,8 @@ class ModelEvaluator:
         calculate_val_loss: bool = True,
         calculate_fid_score: bool = False,
         num_val_batches: Optional[int] = None,
-        num_generated_images: int = 100
+        num_generated_images: int = 100,
+        skip_if_metrics_exist: bool = True
     ) -> Dict[str, float]:
         """
         Evaluate a single checkpoint with multiple metrics.
@@ -312,12 +368,42 @@ class ModelEvaluator:
             calculate_fid_score: Whether to calculate FID score
             num_val_batches: Number of validation batches to use
             num_generated_images: Number of images to generate
+            skip_if_metrics_exist: Skip evaluation if metrics file already exists
             
         Returns:
             Dictionary of metrics
         """
         # Extract checkpoint name for saving results
         checkpoint_name = os.path.basename(checkpoint_path)
+        
+        # Create directory for this checkpoint's results
+        checkpoint_dir = self.output_dir / f"checkpoint_{checkpoint_name}"
+        checkpoint_dir.mkdir(exist_ok=True)
+        
+        # Path to metrics file
+        metrics_file = checkpoint_dir / "metrics.json"
+        
+        # Check if metrics already exist
+        if skip_if_metrics_exist and metrics_file.exists():
+            try:
+                with open(metrics_file, 'r') as f:
+                    existing_metrics = json.load(f)
+                
+                # Check if all required metrics exist
+                required_metrics = []
+                if calculate_val_loss:
+                    required_metrics.append('validation_loss')
+                if calculate_fid_score:
+                    required_metrics.append('fid_score')
+                
+                has_all_metrics = all(metric in existing_metrics for metric in required_metrics)
+                
+                if has_all_metrics:
+                    logger.info(f"Found existing metrics for {checkpoint_name}, skipping evaluation")
+                    self.metrics_history[checkpoint_name] = existing_metrics
+                    return existing_metrics
+            except Exception as e:
+                logger.warning(f"Failed to load existing metrics: {str(e)}")
         
         # Load checkpoint
         try:
@@ -326,28 +412,28 @@ class ModelEvaluator:
             logger.error(f"Failed to load checkpoint {checkpoint_path}: {str(e)}")
             return {'error': f"Failed to load checkpoint: {str(e)}"}
         
-        # Create directory for this checkpoint's results
-        checkpoint_dir = self.output_dir / f"checkpoint_{checkpoint_name}"
-        checkpoint_dir.mkdir(exist_ok=True)
-        
         metrics = {}
         
         # Calculate validation loss
         if calculate_val_loss:
             try:
-                val_loss = self.calculate_validation_loss(n_batches=num_val_batches)
+                val_loss = self.calculate_validation_loss(
+                    n_batches=num_val_batches,
+                    metric_file=metrics_file if metrics_file.exists() else None
+                )
                 metrics['validation_loss'] = val_loss
             except Exception as e:
                 logger.error(f"Failed to calculate validation loss: {str(e)}")
                 metrics['validation_loss'] = float('nan')
         
         # Generate images and save in checkpoint directory
+        generated_dir = checkpoint_dir / "generated_images"
         try:
-            generated_dir = checkpoint_dir / "generated_images"
             self.generate_images(
                 num_images=num_generated_images,
                 target_dir=str(generated_dir),
-                batch_size=num_val_batches  
+                batch_size=num_val_batches,  # Use smaller of num_val_batches or 50
+                skip_if_exists=skip_if_metrics_exist
             )
         except Exception as e:
             logger.error(f"Failed to generate images: {str(e)}")
@@ -359,7 +445,8 @@ class ModelEvaluator:
                 fid_score = self.calculate_fid(
                     real_images_dir=real_images_dir,
                     generated_images_dir=str(generated_dir),
-                    num_images=num_generated_images
+                    num_images=num_generated_images,
+                    metric_file=metrics_file if metrics_file.exists() else None
                 )
                 metrics['fid_score'] = fid_score
             except Exception as e:
@@ -368,7 +455,7 @@ class ModelEvaluator:
         
         # Save metrics
         self.metrics_history[checkpoint_name] = metrics
-        with open(checkpoint_dir / "metrics.json", 'w') as f:
+        with open(metrics_file, 'w') as f:
             json.dump(metrics, f, indent=4)
         
         logger.info(f"Evaluation complete for {checkpoint_name}")
@@ -382,7 +469,8 @@ class ModelEvaluator:
         calculate_fid_score: bool = False,
         plot_metrics: bool = True,
         num_generated_images: int = 100,
-        num_val_batches: Optional[int] = 64 
+        num_val_batches: Optional[int] = 64,
+        skip_if_metrics_exist: bool = True
     ) -> Dict[str, Dict[str, float]]:
         """
         Evaluate multiple checkpoints and plot evolution of metrics.
@@ -393,11 +481,34 @@ class ModelEvaluator:
             calculate_val_loss: Whether to calculate validation loss
             calculate_fid_score: Whether to calculate FID score
             plot_metrics: Whether to plot metrics evolution
+            skip_if_metrics_exist: Skip evaluation for checkpoints with existing metrics
             
         Returns:
             Dictionary of metrics for all checkpoints
         """
         all_metrics = {}
+        
+        # Check if all metrics file exists
+        all_metrics_file = self.output_dir / "all_metrics.json"
+        if skip_if_metrics_exist and all_metrics_file.exists():
+            try:
+                with open(all_metrics_file, 'r') as f:
+                    all_metrics = json.load(f)
+                
+                # Check if all checkpoints are present in the metrics file
+                checkpoint_names = [os.path.basename(cp) for cp in checkpoint_paths]
+                has_all_checkpoints = all(f"checkpoint_{name}" in all_metrics for name in checkpoint_names)
+                
+                if has_all_checkpoints:
+                    logger.info("Found metrics for all checkpoints, skipping evaluation")
+                    
+                    # Still plot metrics if requested
+                    if plot_metrics:
+                        self._plot_metrics_evolution(all_metrics)
+                    
+                    return all_metrics
+            except Exception as e:
+                logger.warning(f"Failed to load existing metrics: {str(e)}")
         
         # Evaluate each checkpoint
         for checkpoint_path in checkpoint_paths:
@@ -410,13 +521,14 @@ class ModelEvaluator:
                 calculate_val_loss=calculate_val_loss,
                 calculate_fid_score=calculate_fid_score,
                 num_generated_images=num_generated_images,
-                num_val_batches=num_val_batches
+                num_val_batches=num_val_batches,
+                skip_if_metrics_exist=skip_if_metrics_exist
             )
             
-            all_metrics[checkpoint_name] = metrics
+            all_metrics[f"checkpoint_{checkpoint_name}"] = metrics
         
         # Save all metrics to a combined file
-        with open(self.output_dir / "all_metrics.json", 'w') as f:
+        with open(all_metrics_file, 'w') as f:
             json.dump(all_metrics, f, indent=4)
         
         # Plot metrics evolution if requested
@@ -543,6 +655,13 @@ class ModelEvaluator:
         
         # Plot each metric
         for metric_name in all_metric_names:
+            # Skip error messages and non-numeric metrics
+            if metric_name.endswith('_error') or not any(
+                isinstance(metrics.get(checkpoint_name, {}).get(metric_name, None), (int, float))
+                for checkpoint_name in checkpoint_names
+            ):
+                continue
+                
             plt.figure(figsize=(10, 6))
             
             # Extract metric values for each checkpoint
@@ -550,7 +669,7 @@ class ModelEvaluator:
             y_values = []
             
             for checkpoint_name in checkpoint_names:
-                if metric_name in metrics[checkpoint_name]:
+                if metric_name in metrics.get(checkpoint_name, {}) and not np.isnan(metrics[checkpoint_name][metric_name]):
                     x_values.append(extract_number(checkpoint_name))
                     y_values.append(metrics[checkpoint_name][metric_name])
             
@@ -632,25 +751,4 @@ class ModelEvaluator:
         min_std: float = 0.0
     ) -> torch.Tensor:
         """Calculate rectified flow loss."""
-        t = t.reshape(t.shape[0], *[1 for _ in range(len(input.shape) - len(t.shape))])
-
-        target_flow = (1 - min_std) * noise - input
-        loss = nn.functional.mse_loss(preds.float(), target_flow.float(), reduction="none")
-
-        if use_weighting:
-            # Logit normalization weight (same as in trainer)
-            weight = torch.sigmoid(-torch.logit(t))
-            loss = loss * weight
-            
-        if reduce == "mean":
-            loss = loss.mean()
-        elif reduce == "none":
-            pass
-        else:
-            raise ValueError(f"Unsupported reduction method: {reduce}")
-
-        return loss
-
-    def _discretize_timestep(self, t: Union[torch.Tensor, float], n_timesteps: int = 1000) -> torch.Tensor:
-        """Discretize continuous timestep."""
-        return (t * n_timesteps).round()
+        t = t.reshape(t.shape[0], *[1 for _ in range(len(input.
