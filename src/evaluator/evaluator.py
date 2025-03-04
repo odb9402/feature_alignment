@@ -255,27 +255,43 @@ class ModelEvaluator:
         Calculate Fréchet Inception Distance (FID) between real and generated images.
         
         Args:
-            real_images_dir: Directory containing real images
+            real_images_dir: Directory containing real images (will be populated if empty)
             generated_images_dir: Directory for generated images (will generate if None)
-            num_images: Number of images to generate if needed
+            num_images: Number of images to generate/use
             batch_size: Batch size for generation
             
         Returns:
             FID score
         """
+        # First ensure real images directory is properly prepared
+        try:
+            real_dir = self.prepare_real_images_dir(real_images_dir, num_images, batch_size)
+        except Exception as e:
+            logger.error(f"Failed to prepare real images directory: {str(e)}")
+            return float('nan')
+        
+        # Generate images for FID calculation if needed
         if generated_images_dir is None:
             generated_images_dir = str(self.output_dir / "fid_samples")
-            # Generate images for FID calculation
-            self.generate_images(
-                num_images=num_images, 
-                batch_size=batch_size,
-                target_dir=generated_images_dir
-            )
+            try:
+                # Generate images
+                self.generate_images(
+                    num_images=num_images, 
+                    batch_size=batch_size,
+                    target_dir=generated_images_dir
+                )
+            except Exception as e:
+                logger.error(f"Failed to generate images for FID calculation: {str(e)}")
+                return float('nan')
         
         # Calculate FID using clean-fid
-        fid_score = fid.compute_fid(real_images_dir, generated_images_dir)
-        logger.info(f"FID Score: {fid_score:.4f}")
-        return fid_score
+        try:
+            fid_score = fid.compute_fid(real_dir, generated_images_dir)
+            logger.info(f"FID Score: {fid_score:.4f}")
+            return fid_score
+        except Exception as e:
+            logger.error(f"Failed to compute FID score: {str(e)}")
+            return float('nan')
 
     def evaluate_checkpoint(
         self, 
@@ -304,7 +320,11 @@ class ModelEvaluator:
         checkpoint_name = os.path.basename(checkpoint_path)
         
         # Load checkpoint
-        self.load_checkpoint(checkpoint_path)
+        try:
+            self.load_checkpoint(checkpoint_path)
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint {checkpoint_path}: {str(e)}")
+            return {'error': f"Failed to load checkpoint: {str(e)}"}
         
         # Create directory for this checkpoint's results
         checkpoint_dir = self.output_dir / f"checkpoint_{checkpoint_name}"
@@ -314,24 +334,37 @@ class ModelEvaluator:
         
         # Calculate validation loss
         if calculate_val_loss:
-            val_loss = self.calculate_validation_loss(n_batches=num_val_batches)
-            metrics['validation_loss'] = val_loss
+            try:
+                val_loss = self.calculate_validation_loss(n_batches=num_val_batches)
+                metrics['validation_loss'] = val_loss
+            except Exception as e:
+                logger.error(f"Failed to calculate validation loss: {str(e)}")
+                metrics['validation_loss'] = float('nan')
         
         # Generate images and save in checkpoint directory
-        generated_dir = checkpoint_dir / "generated_images"
-        self.generate_images(
-            num_images=num_generated_images,
-            target_dir=str(generated_dir),
-            batch_size=num_val_batches
-        )
+        try:
+            generated_dir = checkpoint_dir / "generated_images"
+            self.generate_images(
+                num_images=num_generated_images,
+                target_dir=str(generated_dir),
+                batch_size=num_val_batches  
+            )
+        except Exception as e:
+            logger.error(f"Failed to generate images: {str(e)}")
+            metrics['generation_error'] = str(e)
         
         # Calculate FID if requested
         if calculate_fid_score and real_images_dir is not None:
-            fid_score = self.calculate_fid(
-                real_images_dir=real_images_dir,
-                generated_images_dir=str(generated_dir)
-            )
-            metrics['fid_score'] = fid_score
+            try:
+                fid_score = self.calculate_fid(
+                    real_images_dir=real_images_dir,
+                    generated_images_dir=str(generated_dir),
+                    num_images=num_generated_images
+                )
+                metrics['fid_score'] = fid_score
+            except Exception as e:
+                logger.error(f"Failed to calculate FID score: {str(e)}")
+                metrics['fid_score'] = float('nan')
         
         # Save metrics
         self.metrics_history[checkpoint_name] = metrics
@@ -391,6 +424,89 @@ class ModelEvaluator:
             self._plot_metrics_evolution(all_metrics)
         
         return all_metrics
+
+    def prepare_real_images_dir(
+        self,
+        real_images_dir: str,
+        num_images: int = 500,
+        batch_size: int = 50,
+    ) -> str:
+        """
+        Prepare the real images directory for FID calculation.
+        If the directory is empty, save images from validation dataloader.
+        
+        Args:
+            real_images_dir: Directory to store real images
+            num_images: Number of real images to save
+            batch_size: Batch size for processing validation data
+            
+        Returns:
+            Path to the prepared real images directory
+        """
+        real_dir = Path(real_images_dir)
+        real_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Check if directory is empty
+        image_files = list(real_dir.glob('*.png')) + list(real_dir.glob('*.jpg'))
+        
+        if len(image_files) > 0:
+            logger.info(f"Found {len(image_files)} existing real images in {real_images_dir}")
+            return str(real_dir)
+        
+        # Directory is empty, try to save images from validation dataloader
+        logger.info(f"Real images directory {real_images_dir} is empty. Attempting to save images from validation dataloader.")
+        
+        if self.val_dataloader is None:
+            # Try training dataloader if validation is not available
+            if self.dataloader is None:
+                error_msg = "Cannot save real images: both validation and training dataloaders are None."
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+            
+            logger.warning("Validation dataloader not available. Using training dataloader instead.")
+            dataloader = self.dataloader
+        else:
+            dataloader = self.val_dataloader
+        
+        try:
+            images_saved = 0
+            
+            with torch.no_grad():
+                for batch_idx, batch in enumerate(tqdm(dataloader, desc="Saving real images")):
+                    # Handle different dataloader formats
+                    if isinstance(batch, (list, tuple)):
+                        images = batch[0]  # Assuming first element is images
+                    else:
+                        images = batch
+                    
+                    # Convert to device if needed
+                    images = images.to(self.device)
+                    
+                    # Save individual images
+                    for i in range(images.shape[0]):
+                        if images_saved >= num_images:
+                            break
+                        
+                        img_path = real_dir / f"real_image_{images_saved:05d}.png"
+                        save_image(images[i].cpu(), img_path)
+                        images_saved += 1
+                    
+                    if images_saved >= num_images:
+                        break
+            
+            logger.info(f"Successfully saved {images_saved} real images to {real_images_dir}")
+            
+            if images_saved == 0:
+                error_msg = "Failed to save any real images from dataloader."
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+                
+            return str(real_dir)
+            
+        except Exception as e:
+            error_msg = f"Failed to save real images: {str(e)}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
     def _plot_metrics_evolution(self, metrics: Dict[str, Dict[str, float]]) -> None:
         """

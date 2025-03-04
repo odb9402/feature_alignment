@@ -1,2 +1,5 @@
 outputs/*
 *.pyc
+ckpts/*
+data/*
+evaluation_results/*

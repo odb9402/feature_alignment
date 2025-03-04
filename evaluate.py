@@ -12,13 +12,14 @@ from src.experiment import GenericExperimentFactory
 from src.evaluator import ModelEvaluator
 from src.utils import set_all_seeds
 
-@hydra.main(config_path='config', config_name='evaluation')
+@hydra.main(config_path='config', config_name='evaluate')
 def run_evaluation(cfg: DictConfig):
     # Set seed for reproducibility
     set_all_seeds(cfg.seed)
     
     # Configure logging
-    logger.add("evaluation.log", rotation="1 MB", retention="10 days", level="DEBUG")
+    log_file = "evaluation.log"
+    logger.add(log_file, rotation="1 MB", retention="10 days", level="DEBUG")
     
     # Save the configuration for reproducibility
     with open("evaluation_config.yaml", "w") as f:
@@ -31,8 +32,12 @@ def run_evaluation(cfg: DictConfig):
     
     # Create model
     logger.info("Creating model...")
-    model = factory.create_model(cfg)
-    logger.info(f"Model created: {model.__class__.__name__}")
+    try:
+        model = factory.create_model(cfg)
+        logger.info(f"Model created: {model.__class__.__name__}")
+    except Exception as e:
+        logger.error(f"Failed to create model: {str(e)}")
+        return
     
     # Create dataloaders
     logger.info("Creating dataloaders...")
@@ -40,34 +45,63 @@ def run_evaluation(cfg: DictConfig):
     # If validation dataset config is provided, create validation dataloader
     val_dataloader = None
     if 'validation_dataset' in cfg:
-        val_dataset_cfg = OmegaConf.create(cfg.validation_dataset)
-        val_dataloader = factory.create_dataloader(val_dataset_cfg)
-        logger.info(f"Validation dataloader created with batch size: {val_dataset_cfg.dataset.batch_size}")
+        try:
+            val_dataset_cfg = OmegaConf.create(cfg.validation_dataset)
+            val_dataloader = factory.create_dataloader(val_dataset_cfg)
+            logger.info(f"Validation dataloader created with batch size: {val_dataset_cfg.dataset.batch_size}")
+        except Exception as e:
+            logger.error(f"Failed to create validation dataloader: {str(e)}")
     
     # Create training dataloader (might be needed for FID evaluation)
-    train_dataloader = factory.create_dataloader(cfg)
-    logger.info(f"Training dataloader created with batch size: {cfg.dataset.batch_size}")
+    try:
+        train_dataloader = factory.create_dataloader(cfg)
+        logger.info(f"Training dataloader created with batch size: {cfg.dataset.batch_size}")
+    except Exception as e:
+        logger.error(f"Failed to create training dataloader: {str(e)}")
+        if val_dataloader is None:
+            logger.error("Both training and validation dataloaders failed to initialize. Exiting...")
+            return
+        train_dataloader = None
     
     # Determine device
     device = cfg.evaluator.device if 'device' in cfg.evaluator else 'cuda:0'
-    if device == 'cuda' and not torch.cuda.is_available():
+    if device.startswith('cuda') and not torch.cuda.is_available():
         logger.warning("CUDA not available, falling back to CPU")
         device = 'cpu'
     
     # Create evaluator
-    evaluator = ModelEvaluator(
-        model=model,
-        dataloader=train_dataloader,
-        val_dataloader=val_dataloader,
-        device=device,
-        seed=cfg.seed,
-        channel=cfg.evaluator.get('channel', 3),
-        input_size=cfg.evaluator.get('input_size', 64),
-        n_timesteps=cfg.evaluator.get('n_timesteps', 1000),
-        img_encoder=cfg.evaluator.get('img_encoder', None),
-        output_dir=cfg.evaluator.get('output_dir', './evaluation_results'),
-        save_images=cfg.evaluator.get('save_images', True)
-    )
+    try:
+        evaluator = ModelEvaluator(
+            model=model,
+            dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
+            device=device,
+            seed=cfg.seed,
+            channel=cfg.evaluator.get('channel', 3),
+            input_size=cfg.evaluator.get('input_size', 64),
+            n_timesteps=cfg.evaluator.get('n_timesteps', 1000),
+            img_encoder=cfg.evaluator.get('img_encoder', None),
+            output_dir=cfg.evaluator.get('output_dir', './evaluation_results'),
+            save_images=cfg.evaluator.get('save_images', True),
+            n_classes=cfg.evaluator.get('n_classes', 100)
+        )
+    except Exception as e:
+        logger.error(f"Failed to create evaluator: {str(e)}")
+        return
+    
+    # Prepare the real images directory if needed for FID calculation
+    real_images_dir = cfg.evaluator.get('real_images_dir', None)
+    if real_images_dir is not None and cfg.evaluator.get('calculate_fid', False):
+        logger.info(f"Preparing real images directory: {real_images_dir}")
+        try:
+            real_images_dir = evaluator.prepare_real_images_dir(
+                real_images_dir, 
+                num_images=cfg.evaluator.get('num_generated_images', 500)
+            )
+        except Exception as e:
+            logger.error(f"Failed to prepare real images directory: {str(e)}")
+            if cfg.evaluator.get('calculate_fid', False):
+                logger.warning("FID calculation will be skipped due to real images directory preparation failure")
     
     # Checkpoints to evaluate
     checkpoint_paths = []
@@ -95,42 +129,47 @@ def run_evaluation(cfg: DictConfig):
     elif 'checkpoint_path' in cfg.evaluator:
         checkpoint_paths = [cfg.evaluator.checkpoint_path]
     
+    if not checkpoint_paths:
+        logger.error("No checkpoints found for evaluation")
+        return
+        
     logger.info(f"Found {len(checkpoint_paths)} checkpoints to evaluate")
-    
-    # Real images directory for FID calculation
-    real_images_dir = cfg.evaluator.get('real_images_dir', None)
     
     # Run evaluation
     if len(checkpoint_paths) > 1:
         # Multiple checkpoints - run comparative evaluation
-        metrics = evaluator.evaluate_checkpoints(
-            checkpoint_paths=checkpoint_paths,
-            real_images_dir=real_images_dir,
-            calculate_val_loss=cfg.evaluator.get('calculate_val_loss', True),
-            calculate_fid_score=cfg.evaluator.get('calculate_fid', False),
-            plot_metrics=cfg.evaluator.get('plot_metrics', True),
-            num_val_batches=cfg.evaluator.get('num_val_batches', None),
-            num_generated_images=cfg.evaluator.get('num_generated_images', 100)
-        )
-        
-        logger.info(f"Completed evaluation of {len(checkpoint_paths)} checkpoints")
-        logger.info(f"Results saved to {cfg.evaluator.get('output_dir', './evaluation_results')}")
-        
+        try:
+            metrics = evaluator.evaluate_checkpoints(
+                checkpoint_paths=checkpoint_paths,
+                real_images_dir=real_images_dir,
+                calculate_val_loss=cfg.evaluator.get('calculate_val_loss', True),
+                calculate_fid_score=cfg.evaluator.get('calculate_fid', False),
+                plot_metrics=cfg.evaluator.get('plot_metrics', True),
+                num_val_batches=cfg.evaluator.get('num_val_batches', None),
+                num_generated_images=cfg.evaluator.get('num_generated_images', 100)
+            )
+            
+            logger.info(f"Completed evaluation of {len(checkpoint_paths)} checkpoints")
+            logger.info(f"Results saved to {cfg.evaluator.get('output_dir', './evaluation_results')}")
+        except Exception as e:
+            logger.error(f"Failed during checkpoint evaluation: {str(e)}")
+            
     elif len(checkpoint_paths) == 1:
         # Single checkpoint evaluation
-        metrics = evaluator.evaluate_checkpoint(
-            checkpoint_path=checkpoint_paths[0],
-            real_images_dir=real_images_dir,
-            calculate_val_loss=cfg.evaluator.get('calculate_val_loss', True),
-            calculate_fid_score=cfg.evaluator.get('calculate_fid', False),
-            num_val_batches=cfg.evaluator.get('num_val_batches', None),
-            num_generated_images=cfg.evaluator.get('num_generated_images', 100)
-        )
-        
-        logger.info(f"Completed evaluation of checkpoint: {checkpoint_paths[0]}")
-        logger.info(f"Metrics: {metrics}")
-    else:
-        logger.error("No checkpoints found for evaluation")
+        try:
+            metrics = evaluator.evaluate_checkpoint(
+                checkpoint_path=checkpoint_paths[0],
+                real_images_dir=real_images_dir,
+                calculate_val_loss=cfg.evaluator.get('calculate_val_loss', True),
+                calculate_fid_score=cfg.evaluator.get('calculate_fid', False),
+                num_val_batches=cfg.evaluator.get('num_val_batches', None),
+                num_generated_images=cfg.evaluator.get('num_generated_images', 100)
+            )
+            
+            logger.info(f"Completed evaluation of checkpoint: {checkpoint_paths[0]}")
+            logger.info(f"Metrics: {metrics}")
+        except Exception as e:
+            logger.error(f"Failed during checkpoint evaluation: {str(e)}")
 
 if __name__ == "__main__":
     run_evaluation()

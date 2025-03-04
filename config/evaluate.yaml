@@ -62,6 +62,7 @@ evaluator:
   calculate_fid: true
   
   # Number of validation batches to use (null for all)
+  # This configure also be used to generate images for FID calcuation
   num_val_batches: 128 
   
   # Number of images to generate for visualization and FID
