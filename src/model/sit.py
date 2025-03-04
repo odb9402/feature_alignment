@@ -171,6 +171,10 @@ class SiT(nn.Module):
         use_projector=False,
         z_dims=[768],
         projector_dim=2048,
+        # Register token parameters
+        num_register_tokens=8,
+        use_register_tokens=False,
+        register_init_scale=0.02,
         **block_kwargs # fused_attn
     ):
         super().__init__()
@@ -183,6 +187,11 @@ class SiT(nn.Module):
         self.z_dims = z_dims
         self.encoder_depth = encoder_depth
         self.use_projector = use_projector
+        
+        # Register token parameters
+        self.use_register_tokens = use_register_tokens
+        self.num_register_tokens = num_register_tokens if use_register_tokens else 0
+        self.register_init_scale = register_init_scale
 
         self.x_embedder = PatchEmbed(
             input_size, patch_size, in_channels, hidden_size, bias=True
@@ -192,6 +201,12 @@ class SiT(nn.Module):
         num_patches = self.x_embedder.num_patches
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
+        
+        # Register tokens embedding
+        if self.use_register_tokens:
+            self.register_tokens = nn.Parameter(
+                torch.zeros(1, self.num_register_tokens, hidden_size)
+            )
 
         self.blocks = nn.ModuleList([
             SiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, **block_kwargs) for _ in range(depth)
@@ -240,6 +255,10 @@ class SiT(nn.Module):
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
+        # Initialize register tokens if used
+        if self.use_register_tokens:
+            nn.init.normal_(self.register_tokens, std=self.register_init_scale)
+
         # Zero-out adaLN modulation layers in SiT blocks:
         for block in self.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
@@ -275,6 +294,12 @@ class SiT(nn.Module):
         """
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         N, T, D = x.shape
+        
+        # Add register tokens if enabled
+        if self.use_register_tokens:
+            # Expand register tokens to batch size
+            register_tokens = self.register_tokens.expand(N, -1, -1)
+            x = torch.cat([register_tokens, x], dim=1)  # (N, R+T, D)
 
         # timestep and class embedding
         t_embed = self.t_embedder(t)                   # (N, D)
@@ -284,8 +309,18 @@ class SiT(nn.Module):
         for i, block in enumerate(self.blocks):
             x = block(x, c)                      # (N, T, D)
             if (i + 1) == self.encoder_depth and self.use_projector:
-                zs = [projector(x).reshape(N, 256, -1) for projector in self.projectors]
+                if self.use_register_tokens:
+                    # Skip register tokens for projection
+                    x_no_register = x[:, self.num_register_tokens:]
+                    zs = [projector(x_no_register).reshape(N, 256, -1) for projector in self.projectors]
+                else:
+                    zs = [projector(x).reshape(N, 256, -1) for projector in self.projectors]
                 assert zs[0].shape[-1] == self.z_dims[0]
+                
+        # Remove register tokens before final layer if they were used
+        if self.use_register_tokens:
+            x = x[:, self.num_register_tokens:]  # (N, T, D)
+            
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
@@ -293,6 +328,13 @@ class SiT(nn.Module):
             return x, zs
         else:
             return x
+
+    def get_register_tokens(self):
+        """Returns the current register token values for analysis"""
+        if self.use_register_tokens:
+            return self.register_tokens
+        else:
+            return None
 
 
 #################################################################################
@@ -354,41 +396,53 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 #                                   SiT Configs                                  #
 #################################################################################
 
-def SiT_XL_2(**kwargs):
-    return SiT(depth=28, hidden_size=1152, decoder_hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+def SiT_XL_2(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=28, hidden_size=1152, decoder_hidden_size=1152, patch_size=2, num_heads=16, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_XL_4(**kwargs):
-    return SiT(depth=28, hidden_size=1152, decoder_hidden_size=1152, patch_size=4, num_heads=16, **kwargs)
+def SiT_XL_4(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=28, hidden_size=1152, decoder_hidden_size=1152, patch_size=4, num_heads=16, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_XL_8(**kwargs):
-    return SiT(depth=28, hidden_size=1152, decoder_hidden_size=1152, patch_size=8, num_heads=16, **kwargs)
+def SiT_XL_8(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=28, hidden_size=1152, decoder_hidden_size=1152, patch_size=8, num_heads=16, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_L_2(**kwargs):
-    return SiT(depth=24, hidden_size=1024, decoder_hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
+def SiT_L_2(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=24, hidden_size=1024, decoder_hidden_size=1024, patch_size=2, num_heads=16, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_L_4(**kwargs):
-    return SiT(depth=24, hidden_size=1024, decoder_hidden_size=1024, patch_size=4, num_heads=16, **kwargs)
+def SiT_L_4(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=24, hidden_size=1024, decoder_hidden_size=1024, patch_size=4, num_heads=16, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_L_8(**kwargs):
-    return SiT(depth=24, hidden_size=1024, decoder_hidden_size=1024, patch_size=8, num_heads=16, **kwargs)
+def SiT_L_8(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=24, hidden_size=1024, decoder_hidden_size=1024, patch_size=8, num_heads=16, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_B_2(**kwargs):
-    return SiT(depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=2, num_heads=12, **kwargs)
+def SiT_B_2(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=2, num_heads=12, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_B_4(**kwargs):
-    return SiT(depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=4, num_heads=12, **kwargs)
+def SiT_B_4(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=4, num_heads=12, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_B_8(**kwargs):
-    return SiT(depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=8, num_heads=12, **kwargs)
+def SiT_B_8(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=8, num_heads=12, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_S_2(**kwargs):
-    return SiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
+def SiT_S_2(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_S_4(**kwargs):
-    return SiT(depth=12, hidden_size=384, patch_size=4, num_heads=6, **kwargs)
+def SiT_S_4(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=12, hidden_size=384, patch_size=4, num_heads=6, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
-def SiT_S_8(**kwargs):
-    return SiT(depth=12, hidden_size=384, patch_size=8, num_heads=6, **kwargs)
+def SiT_S_8(use_register_tokens=False, num_register_tokens=8, **kwargs):
+    return SiT(depth=12, hidden_size=384, patch_size=8, num_heads=6, 
+               use_register_tokens=use_register_tokens, num_register_tokens=num_register_tokens, **kwargs)
 
 
 SiT_models = {
