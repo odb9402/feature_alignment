@@ -1,3 +1,4 @@
+seed: 0
 
 dataset:
   _target_: src.dataset.dataset.ImageNetDataset
@@ -7,12 +8,14 @@ dataset:
     img_size: 256
 
 model:
-  _target_: src.model.sit.SiT_B_8
+  _target_: src.model.sit.SiT_B_4
+  params:
+    qk_norm: true
 
 trainer:
   _target_: src.trainer.flow_matching_trainer.FlowMatchingTrainer
   num_epochs: 100
+  device: cuda
   params:
     lr: 1e-4
-    device: cuda
     img_encoder: "SD3"
