@@ -432,7 +432,7 @@ class ModelEvaluator:
             self.generate_images(
                 num_images=num_generated_images,
                 target_dir=str(generated_dir),
-                batch_size=num_val_batches,  # Use smaller of num_val_batches or 50
+                batch_size=min(num_val_batches or 50, 50),  # Use smaller of num_val_batches or 50
                 skip_if_exists=skip_if_metrics_exist
             )
         except Exception as e:
@@ -751,4 +751,25 @@ class ModelEvaluator:
         min_std: float = 0.0
     ) -> torch.Tensor:
         """Calculate rectified flow loss."""
-        t = t.reshape(t.shape[0], *[1 for _ in range(len(input.
+        t = t.reshape(t.shape[0], *[1 for _ in range(len(input.shape) - len(t.shape))])
+
+        target_flow = (1 - min_std) * noise - input
+        loss = nn.functional.mse_loss(preds.float(), target_flow.float(), reduction="none")
+
+        if use_weighting:
+            # Logit normalization weight (same as in trainer)
+            weight = torch.sigmoid(-torch.logit(t))
+            loss = loss * weight
+            
+        if reduce == "mean":
+            loss = loss.mean()
+        elif reduce == "none":
+            pass
+        else:
+            raise ValueError(f"Unsupported reduction method: {reduce}")
+
+        return loss
+
+    def _discretize_timestep(self, t: Union[torch.Tensor, float], n_timesteps: int = 1000) -> torch.Tensor:
+        """Discretize continuous timestep."""
+        return (t * n_timesteps).round()
