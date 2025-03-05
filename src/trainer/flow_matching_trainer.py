@@ -75,7 +75,7 @@ class FlowMatchingTrainer(BaseTrainer):
                 cond_input = self.maybe_get_conditional_input(label)
                 cond_input = cond_input.to(self.device)
 
-                noise, noise_latents, t = self.get_noisy_input(latents)
+                noise, noise_latents, t = self.get_noisy_input(latents, device=self.device)
 
                 timesteps = self.discritize_timestep(t, self.n_timesteps)
 
