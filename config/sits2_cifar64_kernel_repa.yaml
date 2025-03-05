@@ -2,7 +2,7 @@ seed: 0
 
 dataset:
   _target_: src.dataset.dataset.CIFAR100Dataset
-  root: '/home/dongpin/feature_alignment/data'
+  root: '~/feature_alignment/data'
   batch_size: 64 
   params:
     img_size: 64 
@@ -16,15 +16,16 @@ model:
     num_classes: 100
     class_dropout_prob: 0.1
     use_cfg: true
-    use_register_tokens: true
-    num_register_tokens: 2
+    use_projector: true
+    encoder_depth: 4
+    z_dims: [1024]
 
 trainer:
-  _target_: src.trainer.flow_matching_trainer.FlowMatchingTrainer
+  _target_: src.trainer.flow_matching_repa_trainer.FlowMatchingKernelREPATrainer
   num_epochs: 600
-  device: 'cuda:1'
+  device: 'cuda:0'
   load_checkpoint_path: null
-  save_checkpoint_dir: /home/dongpin/feature_alignment/ckpts/sits2_cifar64_register
+  save_checkpoint_dir: '/home/dongpin/feature_alignment/ckpts/sits2_cifar64_kernel_repa'
   save_checkpoint_interval: 10000
   params:
     lr: 1e-3

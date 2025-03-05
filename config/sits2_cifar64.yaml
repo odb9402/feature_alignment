@@ -25,5 +25,5 @@ trainer:
   save_checkpoint_dir: ~/feature_alignment/ckpts/sits2_cifar64
   save_checkpoint_interval: 10000
   params:
-    lr: 1e-4
+    lr: 1e-3
     img_encoder: null 

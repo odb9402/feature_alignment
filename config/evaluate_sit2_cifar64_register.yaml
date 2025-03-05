@@ -1,0 +1,82 @@
+# Evaluation configuration
+seed: 42
+
+# Dataset configuration
+dataset:
+  _target_: src.dataset.dataset.CIFAR100Dataset
+  root: '~/feature_alignment/data'
+  batch_size: 64
+  params:
+    img_size: 64
+
+# Optional validation dataset configuration
+validation_dataset:
+  dataset:
+    _target_: src.dataset.dataset.CIFAR100Dataset
+    root: '~/feature_alignment/data'
+    batch_size: 64
+    params:
+      img_size: 64
+
+# Model configuration
+model:
+  _target_: src.model.sit.SiT_B_2
+  params:
+    qk_norm: true
+    input_size: 64
+    in_channels: 3
+    num_classes: 100
+    class_dropout_prob: 0.1
+    use_cfg: true
+    use_register_tokens: true
+    num_register_tokens: 2
+
+# Evaluator configuration
+evaluator:
+  # Device to run evaluation on
+  device: 'cuda:0'
+  
+  # Evaluation output directory
+  output_dir: '/home/dongpin/feature_alignment/evaluation_results/register'
+  
+  # Image settings
+  channel: 3
+  input_size: 64
+  n_timesteps: 1000
+  img_encoder: null
+  
+  # Checkpoints to evaluate
+  # Option 1: Directory with pattern
+  checkpoint_dir: '/home/dongpin/feature_alignment/ckpts/sits2_cifar64_register_lr1e-4'
+  checkpoint_pattern: 'checkpoint_epoch_*.pth'
+  max_checkpoints: 10 
+  
+  # Option 2: List of specific checkpoints
+  # checkpoints:
+  #   - '~/feature_alignment/ckpts/sits2_cifar64/checkpoint_epoch_10_step_1000.pth'
+  #   - '~/feature_alignment/ckpts/sits2_cifar64/checkpoint_epoch_50_step_5000.pth'
+  
+  # Option 3: Single checkpoint
+  # checkpoint_path: '~/feature_alignment/ckpts/sits2_cifar64/checkpoint_epoch_100_step_10000.pth'
+  
+  # Metrics to calculate
+  calculate_val_loss: false 
+  calculate_fid: true
+  
+  # Number of validation batches to use (null for all)
+  # This configure also be used to generate images for FID calcuation
+  num_val_batches: 1024 
+  
+  # Number of images to generate for visualization and FID
+  num_generated_images: 500
+  
+  # Directory with real images for FID calculation
+  real_images_dir: '/home/dongpin/feature_alignment/data/real_images'
+  
+  # Save generated images
+  save_images: true
+  
+  # Plot metrics evolution for multiple checkpoints
+  plot_metrics: true
+
+  n_classes: 100
