@@ -95,9 +95,9 @@ class ModelEvaluator:
         
         # Handle different checkpoint formats
         if 'model_state_dict' in checkpoint:
-            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         else:
-            self.model.load_state_dict(checkpoint)
+            self.model.load_state_dict(checkpoint, strict=False)
             
         self.model.eval()
         logger.info(f"Loaded checkpoint from {checkpoint_path}")
@@ -228,7 +228,7 @@ class ModelEvaluator:
                 # Uniform time steps from 1 to 0
                 time_steps = torch.linspace(1.0, 0.0, nfe + 1)[:-1].to(self.device)
                 
-                for i, t in enumerate(time_steps):
+                for i, t in tqdm(enumerate(time_steps), desc="sampling . . .", total=nfe):
                     # Broadcast t to match batch size
                     timestep = torch.ones(curr_batch_size, device=self.device) * t
                     timestep = self._discretize_timestep(timestep, self.n_timesteps)
@@ -432,7 +432,7 @@ class ModelEvaluator:
             self.generate_images(
                 num_images=num_generated_images,
                 target_dir=str(generated_dir),
-                batch_size=min(num_val_batches or 50, 50),  # Use smaller of num_val_batches or 50
+                batch_size=num_val_batches,
                 skip_if_exists=skip_if_metrics_exist
             )
         except Exception as e:
@@ -445,6 +445,7 @@ class ModelEvaluator:
                 fid_score = self.calculate_fid(
                     real_images_dir=real_images_dir,
                     generated_images_dir=str(generated_dir),
+                    batch_size=num_val_batches,
                     num_images=num_generated_images,
                     metric_file=metrics_file if metrics_file.exists() else None
                 )
